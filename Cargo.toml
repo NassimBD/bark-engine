@@ -10,14 +10,13 @@ repository = "https://github.com/NassimBD/bark-engine"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[[bin]]
-name = "sandbox"
-path = "src/sandbox.rs"
-
 [workspace]
 members = [
-  "engine"
+  "sandbox"
+]
+default-members = [
+  "sandbox"
 ]
 
 [dependencies]
-engine = { path = "engine" }
+log = "0.4"
