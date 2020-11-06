@@ -3,7 +3,21 @@ name = "bark_engine"
 version = "0.1.0"
 authors = ["NassimBD <nassbd@hotmail.fr>"]
 edition = "2018"
+readme = "README.md"
+keywords = ["engine", "game", "gamedev", "graphics"]
+categories = ["game-engines", "graphics", "rendering"]
+repository = "https://github.com/NassimBD/bark-engine"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "sandbox"
+path = "src/sandbox.rs"
+
+[workspace]
+members = [
+  "engine"
+]
+
 [dependencies]
+engine = { path = "engine" }
