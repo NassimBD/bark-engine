@@ -1,2 +1,5 @@
 # Cargo
 /target
+
+# Generated stuff
+**/*.spv

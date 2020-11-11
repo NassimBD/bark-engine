@@ -20,3 +20,20 @@ default-members = [
 
 [dependencies]
 log = "0.4"
+# Wgpu
+raw-window-handle = "0.3"
+image = "0.23"
+winit = "0.23"
+cgmath = "0.17"
+futures = "0.3"
+bytemuck = "1.4"
+# to remove apparently https://sotrh.github.io/learn-wgpu/beginner/tutorial1-window/#what-crates-are-we-using
+[dependencies.wgpu]
+version = "0.6"
+features = ["vulkan-portability"]
+
+[build-dependencies]
+anyhow = "1.0"
+fs_extra = "1.2"
+glob = "0.3"
+shaderc = "0.7"
