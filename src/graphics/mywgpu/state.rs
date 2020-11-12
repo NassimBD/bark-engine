@@ -50,6 +50,7 @@ pub(crate) struct State {
 
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
+    depth_texture: texture::Texture,
 }
 
 impl State {
@@ -270,47 +271,46 @@ impl State {
                 push_constant_ranges: &[],
             });
 
-        let new_render_pipeline = |vertex_shader_module: ShaderModule,
-                                   fragment_shader_module: ShaderModule|
-         -> RenderPipeline {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Render Pipeline"),
-                layout: Some(&render_pipeline_layout),
-                vertex_stage: wgpu::ProgrammableStageDescriptor {
-                    module: &vertex_shader_module,
-                    entry_point: "main", // 1.
-                },
-                fragment_stage: Some(wgpu::ProgrammableStageDescriptor {
-                    module: &fragment_shader_module,
-                    entry_point: "main",
-                }),
-                rasterization_state: Some(wgpu::RasterizationStateDescriptor {
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: wgpu::CullMode::Back,
-                    depth_bias: 0,
-                    depth_bias_slope_scale: 0.0,
-                    depth_bias_clamp: 0.0,
-                    clamp_depth: false,
-                }),
-                color_states: &[wgpu::ColorStateDescriptor {
-                    format: swap_chain_desc.format,
-                    color_blend: wgpu::BlendDescriptor::REPLACE,
-                    alpha_blend: wgpu::BlendDescriptor::REPLACE,
-                    write_mask: wgpu::ColorWrite::ALL,
-                }],
-                primitive_topology: wgpu::PrimitiveTopology::TriangleList,
-                depth_stencil_state: None,
-                vertex_state: wgpu::VertexStateDescriptor {
-                    index_format: wgpu::IndexFormat::Uint16,
-                    vertex_buffers: &[Vertex::desc()],
-                },
-                sample_count: 1,
-                sample_mask: !0,
-                alpha_to_coverage_enabled: false,
-            })
-        };
-
-        let render_pipeline = new_render_pipeline(vertex_shader_module, fragment_shader_module);
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex_stage: wgpu::ProgrammableStageDescriptor {
+                module: &vertex_shader_module,
+                entry_point: "main", // 1.
+            },
+            fragment_stage: Some(wgpu::ProgrammableStageDescriptor {
+                module: &fragment_shader_module,
+                entry_point: "main",
+            }),
+            rasterization_state: Some(wgpu::RasterizationStateDescriptor {
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: wgpu::CullMode::Back,
+                depth_bias: 0,
+                depth_bias_slope_scale: 0.0,
+                depth_bias_clamp: 0.0,
+                clamp_depth: false,
+            }),
+            color_states: &[wgpu::ColorStateDescriptor {
+                format: swap_chain_desc.format,
+                color_blend: wgpu::BlendDescriptor::REPLACE,
+                alpha_blend: wgpu::BlendDescriptor::REPLACE,
+                write_mask: wgpu::ColorWrite::ALL,
+            }],
+            primitive_topology: wgpu::PrimitiveTopology::TriangleList,
+            depth_stencil_state: Some(wgpu::DepthStencilStateDescriptor {
+                format: texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less, // 1.
+                stencil: wgpu::StencilStateDescriptor::default(), // 2.
+            }),
+            vertex_state: wgpu::VertexStateDescriptor {
+                index_format: wgpu::IndexFormat::Uint16,
+                vertex_buffers: &[Vertex::desc()],
+            },
+            sample_count: 1,
+            sample_mask: !0,
+            alpha_to_coverage_enabled: false,
+        });
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -326,6 +326,9 @@ impl State {
         let num_indices = vertex::INDICES.len() as u32;
 
         let input_controller = InputController::new(0.2);
+
+        let depth_texture =
+            texture::Texture::create_depth_texture(&device, &swap_chain_desc, "depth_texture");
 
         Self {
             surface,
@@ -354,6 +357,8 @@ impl State {
 
             instances,
             instance_buffer,
+
+            depth_texture,
         }
     }
 
@@ -361,6 +366,12 @@ impl State {
         self.size = new_size;
         self.swap_chain_desc.width = new_size.width;
         self.swap_chain_desc.height = new_size.height;
+
+        self.depth_texture = texture::Texture::create_depth_texture(
+            &self.device,
+            &self.swap_chain_desc,
+            "depth_texture",
+        );
         self.swap_chain = self
             .device
             .create_swap_chain(&self.surface, &self.swap_chain_desc);
@@ -427,7 +438,14 @@ impl State {
                     store: true,
                 },
             }],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachmentDescriptor {
+                attachment: &self.depth_texture.view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: true,
+                }),
+                stencil_ops: None,
+            }),
         });
 
         render_pass.set_pipeline(&self.render_pipeline);
