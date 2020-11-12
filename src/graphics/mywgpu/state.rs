@@ -1,13 +1,26 @@
 mod camera;
 mod input_controller;
+mod instance;
 mod texture;
 mod uniform;
 mod vertex;
 
-use self::{camera::Camera, input_controller::InputController, uniform::Uniforms, vertex::Vertex};
+use self::{
+    camera::Camera, input_controller::InputController, instance::Instance, uniform::Uniforms,
+    vertex::Vertex,
+};
 
+use cgmath::{InnerSpace, Rotation3, Zero};
 use wgpu::{util::DeviceExt, RenderPipeline, ShaderModule};
 use winit::{event::WindowEvent, window::Window as WinitWindow};
+
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+const NUM_INSTANCES: u32 = NUM_INSTANCES_PER_ROW * NUM_INSTANCES_PER_ROW;
+const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+    0.0,
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+);
 
 pub(crate) struct State {
     surface: wgpu::Surface,
@@ -34,6 +47,9 @@ pub(crate) struct State {
     uniform_buffer: wgpu::Buffer,
     uniforms: Uniforms,
     input_controller: InputController,
+
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
 }
 
 impl State {
@@ -161,6 +177,38 @@ impl State {
             zfar: 100.0,
         };
 
+        let instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let position = cgmath::Vector3 {
+                        x: x as f32,
+                        y: 0.0,
+                        z: z as f32,
+                    } - INSTANCE_DISPLACEMENT;
+
+                    let rotation = if position.is_zero() {
+                        // this is needed so an object at (0, 0, 0) won't get scaled to zero
+                        // as Quaternions can effect scale if they're not created correctly
+                        cgmath::Quaternion::from_axis_angle(
+                            cgmath::Vector3::unit_z(),
+                            cgmath::Deg(0.0),
+                        )
+                    } else {
+                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+                    };
+
+                    Instance { position, rotation }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsage::STORAGE | wgpu::BufferUsage::COPY_DST,
+        });
+
         let mut uniforms = Uniforms::new();
         uniforms.update_view_proj(&camera);
 
@@ -172,24 +220,46 @@ impl State {
 
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStage::VERTEX,
-                    ty: wgpu::BindingType::UniformBuffer {
-                        dynamic: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStage::VERTEX,
+                        ty: wgpu::BindingType::UniformBuffer {
+                            dynamic: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    // For instance buffer
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStage::VERTEX,
+                        ty: wgpu::BindingType::StorageBuffer {
+                            // We don't plan on changing the size of this buffer
+                            dynamic: false,
+                            // The shader is not allowed to modify it's contents
+                            readonly: true,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
                 label: Some("uniform_bind_group_layout"),
             });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(uniform_buffer.slice(..)),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(uniform_buffer.slice(..)),
+                },
+                // for instance buffer
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(instance_buffer.slice(..)),
+                },
+            ],
             label: Some("uniform_bind_group"),
         });
 
@@ -281,6 +351,9 @@ impl State {
             uniform_bind_group,
 
             input_controller,
+
+            instances,
+            instance_buffer,
         }
     }
 
@@ -316,7 +389,24 @@ impl State {
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[self.uniforms]),
-        )
+        );
+
+        for instance in &mut self.instances {
+            const ROTATION_SPEED: f32 = std::f32::consts::PI / 60.0;
+            let amount = cgmath::Quaternion::from_angle_y(cgmath::Rad(ROTATION_SPEED));
+            let current = instance.rotation;
+            instance.rotation = amount * current;
+        }
+        let instance_data = self
+            .instances
+            .iter()
+            .map(Instance::to_raw)
+            .collect::<Vec<_>>();
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&instance_data),
+        );
     }
 
     pub(crate) fn render(&mut self) -> Result<(), wgpu::SwapChainError> {
@@ -353,7 +443,7 @@ impl State {
         render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..));
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
 
         // So that the encoder's reference is also dropped
         drop(render_pass);
