@@ -1,8 +1,7 @@
 mod state;
-mod vertex;
 
 use super::window::{Window, WindowSize};
-use log::{info, trace};
+use log::error;
 use state::State;
 use winit::{
     dpi::PhysicalSize,
@@ -28,19 +27,34 @@ impl Window for DefaultWindow {
 
     fn run(&self) {
         let event_loop = EventLoop::new();
-
         let size = PhysicalSize::new(self.width, self.height);
         let window = WindowBuilder::new()
             .with_title(&self.title)
             .with_inner_size(size)
             .build(&event_loop)
             .unwrap();
+        run(event_loop, window);
+    }
+    fn width(&self) -> u32 {
+        todo!()
+    }
+    fn height(&self) -> u32 {
+        todo!()
+    }
+    #[allow(unused_variables)]
+    fn set_vsync(&mut self, enabled: bool) {
+        todo!();
+    }
+}
 
-        use futures::executor::block_on; // TODO: add in imports?
-                                         // Since main can't be async, we're going to need to block
-        let mut state = block_on(State::new(&window));
+fn run(event_loop: EventLoop<()>, window: winit::window::Window) {
+    use futures::executor::block_on; // TODO: add in imports?
 
-        event_loop.run(move |event, _, control_flow| match event {
+    // Since main can't be async, we're going to need to block
+    let mut state = block_on(State::new(&window));
+
+    event_loop.run(move |event, _, control_flow| {
+        match event {
             Event::WindowEvent {
                 ref event,
                 window_id,
@@ -68,7 +82,17 @@ impl Window for DefaultWindow {
             }
             Event::RedrawRequested(_) => {
                 state.update();
-                state.render();
+                match state.render() {
+                    Ok(_) => {}
+                    // Recreate the swap_chain if lost
+                    Err(wgpu::SwapChainError::Lost) | Err(wgpu::SwapChainError::Outdated) => {
+                        state.resize(state.size)
+                    }
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SwapChainError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                    // All other errors (Outdated, Timeout) should be resolved by the next frame
+                    Err(error) => error!("{:?}", error),
+                }
             }
             Event::MainEventsCleared => {
                 // RedrawRequested will only trigger once, unless we manually
@@ -76,15 +100,6 @@ impl Window for DefaultWindow {
                 window.request_redraw();
             }
             _ => {}
-        });
-    }
-    fn width(&self) -> u32 {
-        todo!()
-    }
-    fn height(&self) -> u32 {
-        todo!()
-    }
-    fn set_vsync(&mut self, enabled: bool) {
-        todo!();
-    }
+        }
+    })
 }

@@ -1,27 +1,39 @@
-use super::vertex::{self, Vertex};
-use image::GenericImageView;
-use log::info;
+mod camera;
+mod input_controller;
+mod texture;
+mod uniform;
+mod vertex;
 
-use wgpu::{util::DeviceExt, PipelineLayout, RenderPipeline, ShaderModule};
-use winit::{
-    event::{ElementState, KeyboardInput, VirtualKeyCode, WindowEvent},
-    window::Window as WinitWindow,
-};
+use self::{camera::Camera, input_controller::InputController, uniform::Uniforms, vertex::Vertex};
+
+use wgpu::{util::DeviceExt, RenderPipeline, ShaderModule};
+use winit::{event::WindowEvent, window::Window as WinitWindow};
 
 pub(crate) struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    sc_desc: wgpu::SwapChainDescriptor,
+    swap_chain_desc: wgpu::SwapChainDescriptor,
     swap_chain: wgpu::SwapChain,
-    size: winit::dpi::PhysicalSize<u32>,
+    pub size: winit::dpi::PhysicalSize<u32>,
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
-    render_pipeline2: wgpu::RenderPipeline,
-    use_default_render_pipeline: bool,
     vertex_buffer: wgpu::Buffer,
     num_indices: u32,
     index_buffer: wgpu::Buffer,
+
+    #[allow(dead_code)]
+    diffuse_texture_tree: texture::Texture,
+    diffuse_bind_group_tree: wgpu::BindGroup,
+    #[allow(dead_code)]
+    diffuse_texture_doggo: texture::Texture,
+    diffuse_bind_group_doggo: wgpu::BindGroup,
+
+    camera: Camera,
+    uniform_bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+    uniforms: Uniforms,
+    input_controller: InputController,
 }
 
 impl State {
@@ -62,10 +74,65 @@ impl State {
         };
         let swap_chain = device.create_swap_chain(&surface, &swap_chain_desc);
 
-        let diffuse_bytes = include_bytes!("assets/happytree.png");
-        let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
-        let diffuse_rgba = diffuse_image.as_rgba8().unwrap();
-        let dimensions = diffuse_image.dimensions();
+        let diffuse_bytes_tree = include_bytes!("assets/happytree.png");
+        let diffuse_bytes_doggo = include_bytes!("assets/happytree2.png");
+        let diffuse_texture_doggo =
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes_doggo, "doggo").unwrap();
+        let diffuse_texture_tree =
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes_tree, "happy tree")
+                .unwrap();
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStage::FRAGMENT,
+                        ty: wgpu::BindingType::SampledTexture {
+                            multisampled: false,
+                            dimension: wgpu::TextureViewDimension::D2,
+                            component_type: wgpu::TextureComponentType::Uint,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStage::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler { comparison: false },
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
+        let diffuse_bind_group_tree = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_tree.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture_tree.sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group_tree"),
+        });
+        let diffuse_bind_group_doggo = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_doggo.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture_doggo.sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group_doggo"),
+        });
 
         let clear_color = wgpu::Color {
             r: 0.1,
@@ -80,15 +147,56 @@ impl State {
         let fragment_shader_module =
             device.create_shader_module(wgpu::include_spirv!("assets/shader.frag.spv"));
 
-        let vertex_shader2_module =
-            device.create_shader_module(wgpu::include_spirv!("assets/shader2.vert.spv"));
-        let fragment_shader2_module =
-            device.create_shader_module(wgpu::include_spirv!("assets/shader2.frag.spv"));
+        let camera = Camera {
+            // position the camera one unit up and 2 units back
+            // +z is out of the screen
+            eye: (0.0, 1.0, 2.0).into(),
+            // have it look at the origin
+            target: (0.0, 0.0, 0.0).into(),
+            // which way is "up"
+            up: cgmath::Vector3::unit_y(),
+            aspect: swap_chain_desc.width as f32 / swap_chain_desc.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+
+        let mut uniforms = Uniforms::new();
+        uniforms.update_view_proj(&camera);
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniforms]),
+            usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+        });
+
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStage::VERTEX,
+                    ty: wgpu::BindingType::UniformBuffer {
+                        dynamic: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("uniform_bind_group_layout"),
+            });
+
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(uniform_buffer.slice(..)),
+            }],
+            label: Some("uniform_bind_group"),
+        });
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&texture_bind_group_layout, &uniform_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -133,7 +241,6 @@ impl State {
         };
 
         let render_pipeline = new_render_pipeline(vertex_shader_module, fragment_shader_module);
-        let render_pipeline2 = new_render_pipeline(vertex_shader2_module, fragment_shader2_module);
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -148,28 +255,42 @@ impl State {
 
         let num_indices = vertex::INDICES.len() as u32;
 
+        let input_controller = InputController::new(0.2);
+
         Self {
             surface,
             device,
             queue,
-            sc_desc: swap_chain_desc,
+            swap_chain_desc,
             swap_chain,
             size,
             clear_color,
             render_pipeline,
-            render_pipeline2,
-            use_default_render_pipeline: true,
             vertex_buffer,
             index_buffer,
             num_indices,
+
+            diffuse_texture_tree,
+            diffuse_texture_doggo,
+            diffuse_bind_group_tree,
+            diffuse_bind_group_doggo,
+
+            camera,
+            uniforms,
+            uniform_buffer,
+            uniform_bind_group,
+
+            input_controller,
         }
     }
 
     pub(crate) fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         self.size = new_size;
-        self.sc_desc.width = new_size.width;
-        self.sc_desc.height = new_size.height;
-        self.swap_chain = self.device.create_swap_chain(&self.surface, &self.sc_desc);
+        self.swap_chain_desc.width = new_size.width;
+        self.swap_chain_desc.height = new_size.height;
+        self.swap_chain = self
+            .device
+            .create_swap_chain(&self.surface, &self.swap_chain_desc);
     }
 
     pub(crate) fn input(&mut self, event: &WindowEvent) -> bool {
@@ -183,33 +304,23 @@ impl State {
                 };
                 true
             }
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(key),
-                        ..
-                    },
-                ..
-            } => match key {
-                VirtualKeyCode::Space => {
-                    self.use_default_render_pipeline = ElementState::Released == *state;
-                    true
-                }
-                _ => false,
-            },
+            WindowEvent::KeyboardInput { input, .. } => self.input_controller.process_input(input),
             _ => false,
         }
     }
 
-    pub(crate) fn update(&mut self) {}
+    pub(crate) fn update(&mut self) {
+        self.camera.update(&self.input_controller);
+        self.uniforms.update_view_proj(&self.camera);
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[self.uniforms]),
+        )
+    }
 
-    pub(crate) fn render(&mut self) {
-        let frame = self
-            .swap_chain
-            .get_current_frame()
-            .expect("Timeout getting texture")
-            .output;
+    pub(crate) fn render(&mut self) -> Result<(), wgpu::SwapChainError> {
+        let frame = self.swap_chain.get_current_frame()?.output;
 
         let mut encoder = self
             .device
@@ -229,11 +340,17 @@ impl State {
             depth_stencil_attachment: None,
         });
 
-        render_pass.set_pipeline(if self.use_default_render_pipeline {
-            &self.render_pipeline
-        } else {
-            &self.render_pipeline2
-        });
+        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_bind_group(
+            0,
+            if !self.input_controller.is_space_pressed {
+                &self.diffuse_bind_group_tree
+            } else {
+                &self.diffuse_bind_group_doggo
+            },
+            &[],
+        );
+        render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..));
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
@@ -243,5 +360,7 @@ impl State {
 
         // submit will accept anything that implements IntoIter
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        Ok(())
     }
 }
