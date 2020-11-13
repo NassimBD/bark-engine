@@ -1,27 +1,25 @@
 mod camera;
 mod input_controller;
 mod instance;
+mod model;
 mod texture;
 mod uniform;
 mod vertex;
 
 use self::{
-    camera::Camera, input_controller::InputController, instance::Instance, uniform::Uniforms,
-    vertex::Vertex,
+    camera::Camera,
+    input_controller::InputController,
+    instance::Instance,
+    model::ModelVertex,
+    model::{DrawModel, Vertex},
+    uniform::Uniforms,
 };
 
 use cgmath::{InnerSpace, Rotation3, Zero};
-use wgpu::{util::DeviceExt, RenderPipeline, ShaderModule};
+use wgpu::util::DeviceExt;
 use winit::{event::WindowEvent, window::Window as WinitWindow};
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
-const NUM_INSTANCES: u32 = NUM_INSTANCES_PER_ROW * NUM_INSTANCES_PER_ROW;
-const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-    0.0,
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-);
-
 pub(crate) struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -31,16 +29,6 @@ pub(crate) struct State {
     pub size: winit::dpi::PhysicalSize<u32>,
     clear_color: wgpu::Color,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    num_indices: u32,
-    index_buffer: wgpu::Buffer,
-
-    #[allow(dead_code)]
-    diffuse_texture_tree: texture::Texture,
-    diffuse_bind_group_tree: wgpu::BindGroup,
-    #[allow(dead_code)]
-    diffuse_texture_doggo: texture::Texture,
-    diffuse_bind_group_doggo: wgpu::BindGroup,
 
     camera: Camera,
     uniform_bind_group: wgpu::BindGroup,
@@ -51,6 +39,7 @@ pub(crate) struct State {
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
     depth_texture: texture::Texture,
+    obj_model: model::Model,
 }
 
 impl State {
@@ -91,14 +80,6 @@ impl State {
         };
         let swap_chain = device.create_swap_chain(&surface, &swap_chain_desc);
 
-        let diffuse_bytes_tree = include_bytes!("assets/happytree.png");
-        let diffuse_bytes_doggo = include_bytes!("assets/happytree2.png");
-        let diffuse_texture_doggo =
-            texture::Texture::from_bytes(&device, &queue, diffuse_bytes_doggo, "doggo").unwrap();
-        let diffuse_texture_tree =
-            texture::Texture::from_bytes(&device, &queue, diffuse_bytes_tree, "happy tree")
-                .unwrap();
-
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -121,35 +102,6 @@ impl State {
                 ],
                 label: Some("texture_bind_group_layout"),
             });
-
-        let diffuse_bind_group_tree = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_tree.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture_tree.sampler),
-                },
-            ],
-            label: Some("diffuse_bind_group_tree"),
-        });
-        let diffuse_bind_group_doggo = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_doggo.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture_doggo.sampler),
-                },
-            ],
-            label: Some("diffuse_bind_group_doggo"),
-        });
 
         let clear_color = wgpu::Color {
             r: 0.1,
@@ -178,24 +130,25 @@ impl State {
             zfar: 100.0,
         };
 
+        const SPACE_BETWEEN: f32 = 3.0;
         let instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|z| {
                 (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let position = cgmath::Vector3 {
-                        x: x as f32,
-                        y: 0.0,
-                        z: z as f32,
-                    } - INSTANCE_DISPLACEMENT;
+                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+
+                    let position = cgmath::Vector3 { x, y: 0.0, z };
 
                     let rotation = if position.is_zero() {
-                        // this is needed so an object at (0, 0, 0) won't get scaled to zero
-                        // as Quaternions can effect scale if they're not created correctly
                         cgmath::Quaternion::from_axis_angle(
                             cgmath::Vector3::unit_z(),
                             cgmath::Deg(0.0),
                         )
                     } else {
-                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+                        cgmath::Quaternion::from_axis_angle(
+                            position.clone().normalize(),
+                            cgmath::Deg(45.0),
+                        )
                     };
 
                     Instance { position, rotation }
@@ -304,31 +257,27 @@ impl State {
                 stencil: wgpu::StencilStateDescriptor::default(), // 2.
             }),
             vertex_state: wgpu::VertexStateDescriptor {
-                index_format: wgpu::IndexFormat::Uint16,
-                vertex_buffers: &[Vertex::desc()],
+                index_format: wgpu::IndexFormat::Uint32,
+                vertex_buffers: &[ModelVertex::desc()],
             },
             sample_count: 1,
             sample_mask: !0,
             alpha_to_coverage_enabled: false,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(vertex::VERTICES),
-            usage: wgpu::BufferUsage::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(vertex::INDICES),
-            usage: wgpu::BufferUsage::INDEX,
-        });
-
-        let num_indices = vertex::INDICES.len() as u32;
-
         let input_controller = InputController::new(0.2);
 
         let depth_texture =
             texture::Texture::create_depth_texture(&device, &swap_chain_desc, "depth_texture");
+
+        let res_dir = std::path::Path::new(env!("OUT_DIR")).join("res");
+        let obj_model = model::Model::load(
+            &device,
+            &queue,
+            &texture_bind_group_layout,
+            res_dir.join("cube.obj"),
+        )
+        .unwrap();
 
         Self {
             surface,
@@ -339,14 +288,6 @@ impl State {
             size,
             clear_color,
             render_pipeline,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
-
-            diffuse_texture_tree,
-            diffuse_texture_doggo,
-            diffuse_bind_group_tree,
-            diffuse_bind_group_doggo,
 
             camera,
             uniforms,
@@ -359,6 +300,8 @@ impl State {
             instance_buffer,
 
             depth_texture,
+
+            obj_model,
         }
     }
 
@@ -449,20 +392,13 @@ impl State {
         });
 
         render_pass.set_pipeline(&self.render_pipeline);
-        render_pass.set_bind_group(
-            0,
-            if !self.input_controller.is_space_pressed {
-                &self.diffuse_bind_group_tree
-            } else {
-                &self.diffuse_bind_group_doggo
-            },
-            &[],
-        );
         render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..));
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..self.instances.len() as _);
 
+        render_pass.draw_model_instanced(
+            &self.obj_model,
+            0..self.instances.len() as u32,
+            &self.uniform_bind_group,
+        );
         // So that the encoder's reference is also dropped
         drop(render_pass);
 

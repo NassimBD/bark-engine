@@ -107,6 +107,7 @@ dependencies = [
  "log",
  "raw-window-handle",
  "shaderc",
+ "tobj",
  "wgpu",
  "winit",
 ]
@@ -1808,6 +1809,12 @@ dependencies = [
  "miniz_oxide 0.4.3",
  "weezl",
 ]
+
+[[package]]
+name = "tobj"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6172100cd5b17cdd085c94f261e31101ca31886c86a2337a6687dac6d2fb3cf1"
 
 [[package]]
 name = "toml"

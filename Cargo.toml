@@ -28,6 +28,7 @@ cgmath = "0.17"
 futures = "0.3"
 bytemuck = "1.4"
 anyhow = "1.0"
+tobj = "2.0"
 # to remove apparently https://sotrh.github.io/learn-wgpu/beginner/tutorial1-window/#what-crates-are-we-using
 [dependencies.wgpu]
 version = "0.6"
