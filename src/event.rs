@@ -1,8 +1,8 @@
-use anyhow::*;
+use crate::graphics::window::{WindowPosition, WindowSize};
+
 use std::collections::VecDeque;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::graphics::window::{WindowID, WindowPosition, WindowSize};
 type EventBuffer = VecDeque<Event>;
 
 #[derive(Debug, Copy, Clone)]
@@ -72,9 +72,7 @@ impl EventRepository {
 
 impl EventSender {
     pub fn send(&self, event: Event) {
-        self.sender
-            .send(event)
-            .expect("Could not send an event");
+        self.sender.send(event).expect("Could not send an event");
     }
 }
 

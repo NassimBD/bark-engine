@@ -64,7 +64,7 @@ pub fn winit_loop(engine_builder: EngineBuilder) {
             trace!("Event: {:?}", event);
             match event {
                 Event::WindowCloseRequested => *control_flow = ControlFlow::Exit,
-                event => engine.engine_loop(event, &mut event_sender),
+                event => engine.game_loop(event, &mut event_sender),
             }
         }
     })

@@ -1,23 +1,16 @@
-use anyhow::*;
-use log::{info, trace};
-use winit::{event::Event as WinitEvent, event_loop::ControlFlow};
-
 use crate::{
     event::{EventRepository, EventSender},
-    graphics::{window::WindowSize, winit_event_parser, WgpuWindowBuilder},
+    graphics::WgpuWindowBuilder,
     Event,
 };
+
+use anyhow::*;
 
 #[allow(dead_code)]
 pub struct Engine {
     pub running: bool,
     pub window: winit::window::Window,
     pub event_repository: EventRepository,
-}
-
-#[derive(Default)]
-pub struct EngineBuilder {
-    pub(crate) window: Option<WgpuWindowBuilder>,
 }
 
 impl Engine {
@@ -29,9 +22,11 @@ impl Engine {
         }
     }
 
-    pub(crate) fn engine_loop(&mut self, event: Event, event_sender: &mut EventSender) {
+    pub(crate) fn game_loop(&mut self, event: Event, event_sender: &mut EventSender) {
         match event {
             Event::WindowRedrawRequested => {
+                // render *should* be fine, but update shouldn't be tied
+                // to the redraw event
                 self.update();
                 self.render();
             }
@@ -55,6 +50,11 @@ impl Engine {
     }
 
     pub fn render(&mut self) {}
+}
+
+#[derive(Default)]
+pub struct EngineBuilder {
+    pub(crate) window: Option<WgpuWindowBuilder>,
 }
 
 impl EngineBuilder {

@@ -1,7 +1,7 @@
 use anyhow::*;
 use bark_engine::{
-    core::{Engine, EngineBuilder},
-    graphics::{winit_loop, WgpuWindowBuilder, Window},
+    core::EngineBuilder,
+    graphics::{winit_loop, WgpuWindowBuilder},
 };
 use env_logger::{self, WriteStyle};
 use log::info;
