@@ -1,5 +1,6 @@
-mod mywgpu;
+mod mywgpu_old;
+mod wgpu;
 pub mod window;
 
-pub use mywgpu::DefaultWindow;
+pub use self::wgpu::{WgpuWindowBuilder, winit_event_parser, winit_loop};
 pub use window::Window;

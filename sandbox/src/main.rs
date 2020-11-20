@@ -1,20 +1,21 @@
+use anyhow::*;
 use bark_engine::{
-    core::Engine,
-    graphics::{DefaultWindow, Window},
+    core::{Engine, EngineBuilder},
+    graphics::{winit_loop, WgpuWindowBuilder, Window},
 };
 use env_logger::{self, WriteStyle};
 use log::info;
 
-fn main() {
+fn main() -> Result<()> {
     init_logger();
 
-    // let mut engine = Engine::new();
-    /* ... */
+    let window = WgpuWindowBuilder::new();
     info!("Starting engine");
-    // engine.run();
-    let window = DefaultWindow::create("Bark Engine", 1280, 720);
-    // DefaultWindow::main();
-    window.run();
+    EngineBuilder::new()
+        .with_window(window)
+        .build_and_run(winit_loop)?;
+
+    Ok(())
 }
 
 fn init_logger() {
