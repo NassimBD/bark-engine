@@ -1,19 +1,17 @@
 use crate::graphics::window::{WindowPosition, WindowSize};
-
 use std::collections::VecDeque;
-use std::sync::mpsc::{channel, Receiver, Sender};
 
 type EventBuffer = VecDeque<Event>;
 
 #[derive(Debug, Copy, Clone)]
-enum CurrentEventBuffer {
+pub(crate) enum CurrentEventBuffer {
     First,
     Second,
 }
 #[derive(Debug, Default)]
 pub struct Events {
     events: (EventBuffer, EventBuffer),
-    current_event_buffer: CurrentEventBuffer,
+    pub(crate) current_event_buffer: CurrentEventBuffer,
 }
 
 impl Default for CurrentEventBuffer {
@@ -31,48 +29,28 @@ impl std::ops::Not for CurrentEventBuffer {
     }
 }
 pub struct EventRepository {
-    event_sender: Sender<Event>,
-    event_receiver: Receiver<Event>,
-    events: Events,
-}
-
-pub struct EventSender {
-    sender: Sender<Event>,
+    pub(crate) events: Events,
 }
 
 impl EventRepository {
     pub fn new() -> Self {
-        let (sender, receiver) = channel();
         Self {
-            event_sender: sender,
-            event_receiver: receiver,
             events: Events::new(),
         }
     }
 
-    pub fn clone_sender(&mut self) -> EventSender {
-        EventSender {
-            sender: self.event_sender.clone(),
-        }
-    }
-
-    pub fn update(&mut self) {
-        self.events
-            .buffer(self.events.current_event_buffer)
-            .extend(self.event_receiver.try_iter());
-    }
-
     pub fn drain<'a>(&'a mut self) -> impl Iterator<Item = Event> + 'a {
         let current_buffer = self.events.current_event_buffer;
-        self.events.current_event_buffer = !self.events.current_event_buffer;
-        let events = self.events.buffer(current_buffer).drain(..);
-        events
+        self.switch_buffer();
+        self.events.current(current_buffer).drain(..)
     }
-}
 
-impl EventSender {
-    pub fn send(&self, event: Event) {
-        self.sender.send(event).expect("Could not send an event");
+    fn switch_buffer(&mut self) {
+        self.events.current_event_buffer = !self.events.current_event_buffer;
+    }
+
+    pub fn push(&mut self, event: Event) {
+        self.events.push(&event);
     }
 }
 
@@ -83,11 +61,11 @@ impl Events {
         }
     }
     pub fn push(&mut self, event: &Event) {
-        self.buffer(self.current_event_buffer)
+        self.current(self.current_event_buffer)
             .push_back(event.clone());
     }
 
-    fn buffer(&mut self, buffer: CurrentEventBuffer) -> &mut EventBuffer {
+    pub(crate) fn current(&mut self, buffer: CurrentEventBuffer) -> &mut EventBuffer {
         match buffer {
             CurrentEventBuffer::First => &mut self.events.0,
             CurrentEventBuffer::Second => &mut self.events.1,
@@ -99,12 +77,21 @@ pub type Keycode = u32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    CoreEventsClear,
+    WindowEvent(WindowEvent),
+    InputEvent(InputEvent),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowEvent {
     WindowRedrawRequested,
-    WindowCloseRequested,
+    WindowClose,
     WindowResize(WindowSize),
     WindowFocused(bool),
-    WindowMoved(WindowPosition, WindowPosition),
+    WindowMoved(WindowPosition),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputEvent {
     KeyPressed { keycode: Keycode },
     KeyReleased { keycode: Keycode },
     MouseButtonPressed { button: u8 },
@@ -119,44 +106,11 @@ pub enum EventCategory {
     Mouse,
 }
 
-// impl Event {
-//     pub fn category(&self) -> EventCategory {
-//         match self {
-//             // Window events
-//             Event::WindowClose
-//             | Event::WindowResize
-//             | Event::WindowFocus
-//             | Event::WindowLostFocus
-//             | Event::WindowMoved => EventCategory::Window,
-//             // Keyboard events
-//             Event::KeyPressed(_) | Event::KeyReleased(_) | Event::KeyRepeated(_) =>
-//                 EventCategory::Keyboard
-//             ,
-//             // Mouse events
-//             Event::MouseButtonPressed { .. }
-//             | Event::MouseButtonReleased { .. }
-//             | Event::MouseMoved { .. } => EventCategory::Mouse,
-//         }
-//     }
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn push_pop_event() {
-//         let mut events = Events::new();
-//         assert_eq!(events.pop(), None);
-//         events.push(&Event::WindowClose);
-//         events.push(&Event::WindowFocus);
-//         assert_eq!(events.pop(), Some(Event::WindowClose));
-//         assert_eq!(events.pop(), Some(Event::WindowFocus));
-//         assert_eq!(events.pop(), None);
-//     }
-//     #[test]
-//     fn event_category() {
-//         let event: Event = Event::WindowClose;
-//         assert_eq!(EventCategory::Window, event.category());
-//     }
-// }
+impl Event {
+    pub fn is_input(&self) -> bool {
+        match self {
+            Event::InputEvent(_) => true,
+            _ => false,
+        }
+    }
+}

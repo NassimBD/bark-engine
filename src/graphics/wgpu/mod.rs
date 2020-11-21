@@ -1,16 +1,17 @@
-use crate::graphics::window::WindowSize;
 use crate::{
-    core::{Engine, EngineBuilder},
-    event::Event,
+    core::{Engine, WgpuEngineBuilder},
+    event::{Event, WindowEvent},
 };
-use log::trace;
+use crate::{event::InputEvent, graphics::window::WindowSize};
+use anyhow::*;
+use log::info;
 use winit::{
     event::Event as WinitEvent,
-    event::MouseButton,
-    event::{ElementState, WindowEvent},
-    event_loop::ControlFlow,
-    event_loop::EventLoop,
+    event::{ElementState, KeyboardInput, MouseButton, WindowEvent as WinitWindowEvent},
+    event_loop::{ControlFlow, EventLoop},
 };
+
+use super::window::WindowPosition;
 
 #[derive(Default)]
 pub struct WgpuWindowBuilder {
@@ -32,65 +33,92 @@ impl WgpuWindowBuilder {
         self.size = Some(size);
         self
     }
-    pub fn build(mut self) -> (winit::window::Window, winit::event_loop::EventLoop<()>) {
+    pub fn build(mut self) -> (winit::window::Window, winit::event_loop::EventLoop<Event>) {
         if self.title.is_none() {
             self.title = Some(String::from("Bark Engine"));
         }
         if self.size.is_none() {
             self.size = Some(WindowSize::new(1280, 720));
         }
+        let title = self.title.unwrap();
+        let size = self.size.unwrap();
 
-        let build = |title, size: WindowSize| {
-            let event_loop = EventLoop::new();
-            let window = winit::window::WindowBuilder::new()
-                .with_title(title)
-                .with_inner_size(winit::dpi::PhysicalSize::new(size.width, size.height))
-                .build(&event_loop)
-                .expect("Could not build Wgpu window");
-            (window, event_loop)
-        };
-        build(&self.title.unwrap(), self.size.unwrap())
+        let event_loop: EventLoop<Event> = EventLoop::with_user_event();
+        let window = winit::window::WindowBuilder::new()
+            .with_title(title)
+            .with_inner_size(winit::dpi::PhysicalSize::new(size.width, size.height))
+            .build(&event_loop)
+            .expect("Could not build Wgpu window");
+
+        (window, event_loop)
     }
 }
 
-pub fn winit_loop(engine_builder: EngineBuilder) {
+pub fn winit_run(engine_builder: WgpuEngineBuilder) -> Result<()> {
     let (window, event_loop) = engine_builder.window.unwrap().build();
-    let mut engine = Engine::new(window);
-    let mut event_sender = engine.event_repository.clone_sender();
+    let proxy = event_loop.create_proxy();
+    let mut engine = Engine::new(window, proxy);
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
+        match event {
+            WinitEvent::WindowEvent {
+                event: WinitWindowEvent::CloseRequested,
+                ..
+            } => {
+                info!("Window was requested to close");
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+            WinitEvent::MainEventsCleared => {
+                engine.window.request_redraw();
+            }
+            _ => (),
+        }
         if let Some(event) = winit_event_parser(event) {
-            trace!("Event: {:?}", event);
             match event {
-                Event::WindowCloseRequested => *control_flow = ControlFlow::Exit,
-                event => engine.game_loop(event, &mut event_sender),
+                Event::WindowEvent(WindowEvent::WindowClose) => {
+                    info!("Window was requested to close");
+                    *control_flow = ControlFlow::Exit
+                }
+                event => engine.game_loop(event),
             }
         }
     })
 }
 
-pub fn winit_event_parser<T>(event: WinitEvent<T>) -> Option<Event> {
+pub fn winit_event_parser(event: WinitEvent<Event>) -> Option<Event> {
     let event = match event {
-        WinitEvent::MainEventsCleared => Event::CoreEventsClear,
-        WinitEvent::RedrawRequested(_) => Event::WindowRedrawRequested,
+        WinitEvent::UserEvent(event) => event,
+        WinitEvent::RedrawRequested(_) => Event::WindowEvent(WindowEvent::WindowRedrawRequested),
         WinitEvent::WindowEvent { ref event, .. } => match event {
             // window related
-            WindowEvent::CloseRequested => Event::WindowCloseRequested,
-            WindowEvent::Resized(size) => Event::WindowResize(size.into()),
-            WindowEvent::Focused(focused) => Event::WindowFocused(*focused),
-            WindowEvent::Moved(position) => Event::WindowMoved(position.x, position.y),
+            WinitWindowEvent::CloseRequested => Event::WindowEvent(WindowEvent::WindowClose),
+            WinitWindowEvent::Resized(size) => {
+                Event::WindowEvent(WindowEvent::WindowResize(size.into()))
+            }
+            WinitWindowEvent::Focused(focused) => {
+                Event::WindowEvent(WindowEvent::WindowFocused(*focused))
+            }
+            WinitWindowEvent::Moved(position) => {
+                Event::WindowEvent(WindowEvent::WindowMoved(position.into()))
+            }
 
             // devices inputs
-            WindowEvent::KeyboardInput { input, .. } => match input.state {
-                ElementState::Pressed => Event::KeyPressed {
-                    keycode: input.scancode,
+            WinitWindowEvent::KeyboardInput {
+                input: KeyboardInput {
+                    scancode, state, ..
                 },
-                ElementState::Released => Event::KeyReleased {
-                    keycode: input.scancode,
-                },
+                ..
+            } => match state {
+                ElementState::Pressed => {
+                    Event::InputEvent(InputEvent::KeyPressed { keycode: *scancode })
+                }
+                ElementState::Released => {
+                    Event::InputEvent(InputEvent::KeyReleased { keycode: *scancode })
+                }
             },
-            WindowEvent::MouseInput { button, state, .. } => {
+            WinitWindowEvent::MouseInput { button, state, .. } => {
                 let button = match button {
                     MouseButton::Left => 0,
                     MouseButton::Right => 1,
@@ -98,14 +126,20 @@ pub fn winit_event_parser<T>(event: WinitEvent<T>) -> Option<Event> {
                     MouseButton::Other(button) => *button,
                 };
                 match state {
-                    ElementState::Pressed => Event::MouseButtonPressed { button },
-                    ElementState::Released => Event::MouseButtonReleased { button },
+                    ElementState::Pressed => {
+                        Event::InputEvent(InputEvent::MouseButtonPressed { button })
+                    }
+                    ElementState::Released => {
+                        Event::InputEvent(InputEvent::MouseButtonReleased { button })
+                    }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => Event::MouseMoved {
-                x: position.x,
-                y: position.y,
-            },
+            WinitWindowEvent::CursorMoved { position, .. } => {
+                Event::InputEvent(InputEvent::MouseMoved {
+                    x: position.x,
+                    y: position.y,
+                })
+            }
             _ => return None,
         },
         _ => return None,
@@ -128,5 +162,23 @@ where
 {
     fn from(size: &winit::dpi::PhysicalSize<T>) -> Self {
         WindowSize::new(size.width.clone().into(), size.height.clone().into())
+    }
+}
+
+impl<T> From<winit::dpi::PhysicalPosition<T>> for WindowPosition
+where
+    T: Into<i32>,
+{
+    fn from(size: winit::dpi::PhysicalPosition<T>) -> Self {
+        WindowPosition::new(size.x.into(), size.y.into())
+    }
+}
+
+impl<T> From<&winit::dpi::PhysicalPosition<T>> for WindowPosition
+where
+    T: Into<i32> + Clone,
+{
+    fn from(size: &winit::dpi::PhysicalPosition<T>) -> Self {
+        WindowPosition::new(size.x.clone().into(), size.y.clone().into())
     }
 }

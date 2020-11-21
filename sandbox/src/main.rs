@@ -1,7 +1,7 @@
 use anyhow::*;
 use bark_engine::{
-    core::EngineBuilder,
-    graphics::{winit_loop, WgpuWindowBuilder},
+    core::WgpuEngineBuilder,
+    graphics::{winit_run, WgpuWindowBuilder},
 };
 use env_logger::{self, WriteStyle};
 use log::info;
@@ -9,11 +9,10 @@ use log::info;
 fn main() -> Result<()> {
     init_logger();
 
-    let window = WgpuWindowBuilder::new();
     info!("Starting engine");
-    EngineBuilder::new()
-        .with_window(window)
-        .build_and_run(winit_loop)?;
+    WgpuEngineBuilder::new()
+        .with_window(WgpuWindowBuilder::new())
+        .build_and_run(winit_run)?;
 
     Ok(())
 }
